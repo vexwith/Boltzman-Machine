@@ -15,19 +15,6 @@ mnist_pytorch = datasets.MNIST(root='./data', train=True, download=True, transfo
 # Create a DataLoader to load the dataset in batches
 train_loader_pytorch = torch.utils.data.DataLoader(mnist_pytorch, batch_size=1, shuffle=False)
 
-# plt.figure(figsize=(15, 3))
-# Print the first few images in a row
-# for i, (image, label) in enumerate(train_loader_pytorch):
-#     if i < 5:  # Print the first 5 samples
-#         plt.subplot(1, 5, i + 1)
-#         plt.imshow(image[0].squeeze(), cmap='gray')
-#         plt.title(f"Label: {label.item()}")
-#         plt.axis('off')
-#     else:
-#         break  # Exit the loop after printing 5 samples
-# plt.tight_layout()
-# plt.show()
-
 class Network:
 
     def __init__(self, num_values):
@@ -55,14 +42,32 @@ class Network:
             print(f"label: {label.item()}")
         self.update_weights()
 
-    def decode_img(self):
+    def tensor_to_img(self):
         image_tensor = self.X.reshape(28, 28)
-        image_tensor = torch.where(image_tensor == -1, 255, 0) #scaling
+        image_tensor = torch.where(image_tensor == -1, 0, 255)  # scaling
         image_np = image_tensor.cpu().numpy().astype('uint8')
+        return image_np
+
+    def decode_img(self):
+        image_np = self.tensor_to_img()
 
         plt.imshow(image_np, cmap='gray')
-        plt.axis('off')
         plt.show()
+
+    def init_plot(self):
+        plt.ion()  # Enable interactive mode
+        fig, ax = plt.subplots()
+        image_np = self.tensor_to_img()
+
+        img_display = ax.imshow(image_np, cmap='gray')
+        return fig, img_display
+
+    def update_plot(self, img_display, delay_time=0.5):
+        # Update plot in place
+        new_image = self.tensor_to_img()
+        img_display.set_data(new_image)
+        plt.gcf().canvas.draw_idle()  # redraw
+        plt.pause(delay_time)
 
     def embed_test(self, png_path):
         img = Image.open(png_path).convert('L')  # 'L' mode for grayscale
@@ -94,6 +99,8 @@ class Network:
         return ((wei @ self.X).T @ self.X).item() / self.num_minimas # sum of every (weight_ij * x_i * x_j)
 
     def generate(self, max_iters=1000):
+        fig, img_display = self.init_plot()
+
         wei = self.W.triu()
         counter = 0
         best_energy = self.get_system_energy(wei)
@@ -112,17 +119,16 @@ class Network:
                 counter += 1
                 if counter % 100 == 0:
                     print(f"system energy: {cur_energy}  counter: {counter}  best_se: {best_energy}  max_se: {self.num_values * (self.num_values - 1) / 2}")
+                self.update_plot(img_display, 0.005)
 
                 if counter >= max_iters: break
             if prev_energy - cur_energy == 0: break
+        plt.close(fig)
+        plt.ioff()
 
 
 nn = Network(784)
 nn.embed_img()
-for i, (image, label) in enumerate(train_loader_pytorch):
-    if i >= 1: break
-    plt.imshow(image[0].squeeze(), cmap='gray')
-plt.show()
 nn.random_values()
 # print(nn.X)
 # print(torch.count_nonzero(nn.X == -1))
