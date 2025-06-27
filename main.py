@@ -87,12 +87,14 @@ class Network:
         # Convert to PyTorch tensor
         img_tensor = torch.from_numpy(img_array).float().to(device)
         binary_tensor = torch.where(img_tensor == 0, -1.0, 1.0)
-        binary_tensor = binary_tensor.reshape(self.num_values, 1)
 
         # Ensure shapes match (safety check)
-        assert binary_tensor.shape == self.X.shape, \
-            f"Shape mismatch: expected {self.X.shape}, got {binary_tensor.shape}"
+        shape = binary_tensor.shape
+        num_pixels = shape[0] * shape[1]
+        assert num_pixels == self.num_values, \
+            f"Shape mismatch: expected {self.X.shape}, got {num_pixels}"
 
+        binary_tensor = binary_tensor.reshape(self.num_values, 1) # [num_values, 1]
         # Copy values into self.X (in-place to avoid reallocation)
         self.X.copy_(binary_tensor)
 
@@ -166,9 +168,13 @@ class Network:
         model.num_minimas = checkpoint['num_minimas']
         return model
 
-    def train(self, filepath, info=False):
-        self.random_noise(10)
-        self.embed_img(num_images=10, info=info)
+    def train(self, filepath, epochs, info=False):
+        temp_wei = torch.zeros(self.num_values, self.num_values, device=device)
+        for i in range(epochs):
+            self.random_noise(10)
+            self.embed_img(use_all=True, info=info)
+            temp_wei += self.W
+        self.W = temp_wei
         self.save_model(filepath)
 
     def random_noise(self, repetitions):
@@ -176,7 +182,7 @@ class Network:
         for i in range(repetitions):
             self.random_values()
             self.W = self.random_weights()
-            self.generate(find_minimum=True, info=False)
+            self.generate(max_iters=2000, info=False)
             self.update_weights()
             temp_wei -= self.W # subtracting random noise
         self.W = temp_wei
@@ -188,10 +194,10 @@ if __name__ == '__main__':
     if train_again or not os.path.exists(model_path):
         print(f"Model not found at {model_path}\nTraining new model...")
         nn = Network(784)
-        nn.train(model_path, info=True)
+        nn.train(model_path, 10, info=False)
     loaded_nn = Network.load_model(model_path)
     # from specified
-    loaded_nn.embed_test('test_1.png')
+    loaded_nn.embed_test('test_2.png')
     loaded_nn.decode_img()
     loaded_nn.generate(max_iters=10000, find_minimum=True)
     loaded_nn.decode_img()
