@@ -20,19 +20,32 @@ class Network:
 
     def __init__(self, num_values):
         self.num_values = num_values
+        self.num_hidden = num_values * 4
         self.num_minimas = 0
         self.X = torch.ones(num_values, 1, device=device)
-        self.W = torch.zeros(num_values, num_values, device=device)
+        self.hidden = torch.ones(self.num_hidden, 1, device=device)
+        self.W = torch.zeros(num_values, self.num_hidden, device=device) # Simple linear connection from X to hidden
 
     def random_values(self):
         self.X = torch.ones(self.num_values, 1, device=device)
         self.X[torch.rand(self.num_values, 1, device=device) > 0.5] = -1
+        self.random_hidden()
+
+    def random_hidden(self):
+        with torch.no_grad():
+            # Random projection (adjust weights as needed)
+            W_init = torch.randn(self.num_hidden, self.num_values, device=device) * 0.1  # Small random weights
+            self.hidden = torch.sigmoid(W_init @ self.X)  # Non-linear transform
+            rand_hidden = torch.randn(self.num_hidden, 1, device=device)
+            self.hidden = torch.where(rand_hidden > self.hidden, 1.0, -1.0)
+        # self.hidden = torch.ones(self.num_hidden, 1, device=device)
+        # self.hidden[torch.rand(self.num_hidden, 1, device=device) > 0.5] = -1
 
     def random_weights(self):
-        W = torch.ones(self.num_values, self.num_values, device=device)
-        W[torch.rand(self.num_values, self.num_values, device=device) > 0.5] = -1
-        W.fill_diagonal_(0)
-        W = W.tril() + W.T.triu()
+        W = torch.ones(self.num_values, self.num_hidden, device=device)
+        W[torch.rand(self.num_values, self.num_hidden, device=device) > 0.5] = -1
+        # W.fill_diagonal_(0)
+        # W = W.tril() + W.T.triu() # Weights need to be symmetrical
         return W
 
     def embed_img(self, num_images=1, num_labels=10, use_all=False, info=False):
@@ -45,9 +58,10 @@ class Network:
             if use_all or labels.get(label_name, 0) < max_for_label:
                 labels[label_name] = labels.get(label_name, 0) + 1
                 # Image embedding
-                self.X = image.squeeze(0).flatten().to(device)
-                self.X = torch.where(self.X > 0, torch.tensor(1, device=device), torch.tensor(-1, device=device))
+                self.X = image.squeeze(0).flatten().unsqueeze(1).to(device)
+                self.X = torch.where(self.X > 0, 1.0, -1.0)
                 if info: print(f"idx: {i}  label: {label_name}")
+                self.random_hidden()
                 self.update_weights()
             else: # If skipped due to repeating we need to take more images into account
                 num_images += 1
@@ -97,55 +111,63 @@ class Network:
         binary_tensor = binary_tensor.reshape(self.num_values, 1) # [num_values, 1]
         # Copy values into self.X (in-place to avoid reallocation)
         self.X.copy_(binary_tensor)
+        self.random_hidden()
 
     def update_weights(self):
-        # Makes [num_values x num_values] matrix of every x_i * x_j
-        self.W += torch.outer(self.X.squeeze(), self.X.squeeze())
-        self.W.fill_diagonal_(0)
+        # Makes [num_values x num_hidden] matrix of every x * h
+        self.W += torch.outer(self.X.squeeze(), self.hidden.squeeze())
+        # self.W.fill_diagonal_(0)
         self.num_minimas += 1
 
-    def get_neuron_neighbour_energy(self, idx):
-        return self.W[idx] @ self.X
+    def get_neuron_energy(self, idx, get_hidden):
+        if get_hidden: # Get the energy of a hidden node
+            return (self.W[:, idx] @ self.X) * self.hidden[idx]
+        else:
+            return (self.W[idx] @ self.hidden) * self.X[idx]
 
-    def get_system_energy(self, wei): # we want it to be the highest
-        return ((wei @ self.X).T @ self.X).item() # sum of every (weight_ij * x_i * x_j)
+    def get_system_energy(self): # we want it to be the highest
+        return ((self.W.sign() @ self.hidden).T @ self.X).item() # sum of every (weight_ij * x * h)
+
+    def update_node(self, values, idx, get_hidden, temperature):
+        neuron_energy = self.get_neuron_energy(idx, get_hidden)
+        probability = 1 / (1 + torch.exp(-neuron_energy / temperature))  # sigmoid - probability of saying the same
+        r = torch.rand(1, device=device)
+        if r > probability:
+            values[idx] = -values[idx]
 
     def generate(self, max_iters=1000, find_minimum=False, info=True):
         if info:
             fig, img_display = self.init_plot()
 
-        wei = self.W.triu().sign() # to not repeat weights use triu only and normalize to -1, 0, 1
         counter = 0
         temperature = 5
         tcr = 0.005 # temperature change rate
-        best_energy = self.get_system_energy(wei)
+        best_energy = self.get_system_energy()
         while find_minimum or counter < max_iters:
-            indices = np.random.permutation(self.num_values)
             prev_energy = best_energy
-            for idx in indices:
-                nn_energy = self.get_neuron_neighbour_energy(idx)
-                neuron_energy = nn_energy * self.X[idx] # We need to take neuron value into account
-                probability = 1/(1 + torch.exp(-neuron_energy/temperature)) # sigmoid - probability of saying the same
-                r = torch.rand(1, device=device)
-                if r > probability:
-                    self.X[idx] = -self.X[idx]
+            for idx in range(self.num_hidden + self.num_values):
+                if idx >= self.num_hidden:
+                    self.update_node(self.X, idx - self.num_hidden, False, temperature)
+                else:
+                    self.update_node(self.hidden, idx, True, temperature)
 
-                cur_energy = self.get_system_energy(wei)
+                cur_energy = self.get_system_energy()
                 if cur_energy > best_energy:
                     best_energy = cur_energy
 
-                counter += 1
-                temperature = max(0, temperature - tcr)
-                if info:
-                    if counter % 100 == 0:
-                        print(f"system energy: {cur_energy}  counter: {counter}  best_se: {best_energy}  "
-                              f"max_se: {self.num_values * (self.num_values - 1) / 2}")
-                    if counter % 10 == 0:
-                        self.update_plot(img_display, 0.03)
+                if idx >= self.num_hidden:
+                    counter += 1
+                    temperature = max(0, temperature - tcr)
+                    if info: # Don't show hidden nodes
+                        if counter % 100 == 0:
+                            print(f"system energy: {cur_energy}  counter: {counter}  best_se: {best_energy}  "
+                                  f"max_se: {self.num_values * self.num_hidden}")
+                        if counter % 10 == 0:
+                            self.update_plot(img_display, 0.03)
 
-                # Rate of checking for no energy change
-                if counter % (self.num_values // 2) == 0 \
-                    and prev_energy == best_energy: break
+                    # Rate of checking for no energy change
+                    if counter % (self.num_values // 2) == 0 \
+                        and prev_energy == best_energy: break
                 if not find_minimum and counter >= max_iters: break # break earlier
             if prev_energy == best_energy: break
         if info:
@@ -169,7 +191,7 @@ class Network:
         return model
 
     def train(self, filepath, epochs, info=False):
-        temp_wei = torch.zeros(self.num_values, self.num_values, device=device)
+        temp_wei = torch.zeros(self.num_values, self.num_hidden, device=device)
         for i in range(epochs):
             self.random_noise(10)
             self.embed_img(use_all=True, info=info)
@@ -178,7 +200,7 @@ class Network:
         self.save_model(filepath)
 
     def random_noise(self, repetitions):
-        temp_wei = torch.zeros(self.num_values, self.num_values, device=device)
+        temp_wei = torch.zeros(self.num_values, self.num_hidden, device=device)
         for i in range(repetitions):
             self.random_values()
             self.W = self.random_weights()
@@ -189,21 +211,28 @@ class Network:
 
 
 if __name__ == '__main__':
-    model_path = 'boltzman-model.pth'
-    train_again = False
-    if train_again or not os.path.exists(model_path):
-        print(f"Model not found at {model_path}\nTraining new model...")
-        nn = Network(784)
-        nn.train(model_path, 10, info=False)
-    loaded_nn = Network.load_model(model_path)
-    # from specified
-    loaded_nn.embed_test('test_2.png')
-    loaded_nn.decode_img()
-    loaded_nn.generate(max_iters=10000, find_minimum=True)
-    loaded_nn.decode_img()
-    # from random
-    loaded_nn.random_values()
-    loaded_nn.generate(find_minimum=True)
-    loaded_nn.decode_img()
-    print(torch.count_nonzero(loaded_nn.X == -1))
+    nn = Network(784)
+    # nn.random_noise(10)
+    nn.embed_img(num_images=10, num_labels=1)
+    nn.embed_test('test_2.png')
+    nn.decode_img()
+    nn.generate(find_minimum=True)
+    nn.decode_img()
+    # model_path = 'boltzman-model.pth'
+    # train_again = False
+    # if train_again or not os.path.exists(model_path):
+    #     print(f"Model not found at {model_path}\nTraining new model...")
+    #     nn = Network(784)
+    #     nn.train(model_path, 10, info=False)
+    # loaded_nn = Network.load_model(model_path)
+    # # from specified
+    # loaded_nn.embed_test('test_2.png')
+    # loaded_nn.decode_img()
+    # loaded_nn.generate(max_iters=10000, find_minimum=True)
+    # loaded_nn.decode_img()
+    # # from random
+    # loaded_nn.random_values()
+    # loaded_nn.generate(find_minimum=True)
+    # loaded_nn.decode_img()
+    # print(torch.count_nonzero(loaded_nn.X == -1))
 # '''
