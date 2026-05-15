@@ -29,6 +29,7 @@ Unfortunately it does not work as expected. When trained on a small sample it al
 ### Setup
 
 # Install dependencies
+```
 pip install -r requirements.txt
 ```
 
